@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::cmp::{Ordering,PartialOrd};
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
@@ -12,7 +13,7 @@ pub enum Error {
 
 /// `EpochFlag` validates an epoch,
 /// or describes possible events that occurred
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum EpochFlag {
     /// Epoch is sane
@@ -29,6 +30,30 @@ pub enum EpochFlag {
     ExternalEvent,
     /// Cycle slip at this epoch
     CycleSlip,
+}
+
+// When used AntennaBeingMoved, NewSiteOcuppation, HeaderInfomationFollows
+// are usually printed before the Ok epoch, so we sort them in descending order.
+impl Ord for EpochFlag {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (*self as i32).cmp(&(*other as i32)) {
+            Ordering::Less => Ordering::Greater,
+            Ordering::Greater => Ordering::Less,
+            Ordering::Equal => Ordering::Equal
+        }
+    }
+}
+
+// When used AntennaBeingMoved, NewSiteOcuppation, HeaderInfomationFollows
+// are usually printed before the Ok epoch, so we sort them in descending order.
+impl PartialOrd for EpochFlag {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (*self as i32).cmp(&(*other as i32)) {
+            Ordering::Less => Some(Ordering::Greater),
+            Ordering::Greater => Some(Ordering::Less),
+            Ordering::Equal => Some(Ordering::Equal)
+        }
+    }
 }
 
 impl Default for EpochFlag {

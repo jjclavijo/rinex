@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     epoch, merge, merge::Merge, prelude::Duration, prelude::*, split, split::Split, types::Type,
-    version::Version, Carrier, Observable,
+    version::Version, Carrier, Observable, observation::event
 };
 
 use crate::observation::EpochFlag;
@@ -34,6 +34,8 @@ pub enum Error {
     EpochParsingError,
     #[error("line is empty")]
     MissingData,
+    #[error("malformed event data")]
+    EventParsingError(#[from] event::ParsingError ),
 }
 
 #[cfg(feature = "serde")]
@@ -315,12 +317,12 @@ fn parse_normal(
 
 fn parse_event(
     _header: &Header,
-    _epoch: Epoch,
-    _flag: EpochFlag,
-    _n_records: u16,
-    _clock_offset: Option<f64>,
+    epoch: Epoch,
+    flag: EpochFlag,
+    n_records: u16,
+    clock_offset: Option<f64>,
     _rem: &str,
-    _lines: std::str::Lines<'_>,
+    lines: std::str::Lines<'_>,
 ) -> Result<
     (
         (Epoch, EpochFlag),
@@ -332,8 +334,39 @@ fn parse_event(
     // TODO: Verify that the number of lines of data
     // to read matches the number of records expected
 
+    // Consume _n_records lines
+    // Since event parsing will be done outside it 
+    // shouldn't be problematic
+
+    let rem_lines: Vec<_> = lines.collect();
+    let n_rem_lines = rem_lines.len() as u16;
+
+    if n_rem_lines != n_records {
+        Err(event::ParsingError::EventLengthError(n_rem_lines,n_records))?
+    }
+
     // TODO: Actually process event data
-    Err(Error::MissingData)
+    //
+    // The result of parsing the event cannot be returned as a
+    // BTreeMap<SV, HashMap<Observable, ObservationData>>.
+    // It should return something similar to crate::header:Header.
+    //
+    // If how to parse the event is known, return empty data.
+    // Printing the event with empty data in the output RINEX
+    // is valid as long as nsat, corresponding to the number 
+    // of lines the event spans, is set to 0.
+    //
+    // The event parser is written in a separate module, and called
+    // by the main rinex parser if required when this epoch_parser
+    // returns the corresponding flag. This is not efficient, the 
+    // event lines are read twice, but otherwise we must refactor
+    // all observation related code.
+    //
+    match flag {
+        EpochFlag::AntennaBeingMoved => Ok( ( (epoch, flag), clock_offset, BTreeMap::new())),
+        EpochFlag::NewSiteOccupation => Ok( ( (epoch, flag), clock_offset, BTreeMap::new())),
+        _ => Err(event::ParsingError::NotImplemented(flag))?
+    }
 }
 
 /*
@@ -1579,7 +1612,8 @@ mod test {
         let e = parse_epoch(&header, epoch_str, ts);
 
         match expected_flag {
-            EpochFlag::Ok | EpochFlag::PowerFailure | EpochFlag::CycleSlip => {
+            EpochFlag::Ok | EpochFlag::PowerFailure | EpochFlag::CycleSlip
+               | EpochFlag::AntennaBeingMoved | EpochFlag::NewSiteOccupation => {
                 assert!(e.is_ok())
             },
             _ => {

@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 pub mod record;
 
+pub mod event;
+
 pub mod flag;
 pub use flag::EpochFlag;
 
