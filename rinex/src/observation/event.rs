@@ -1,10 +1,10 @@
-use crate::{
-    fmt_rinex, ground_position::GroundPosition, hardware::Antenna, marker::{GeodeticMarker, MarkerType}, EpochFlag
+use crate::{ epoch, fmt_rinex, ground_position::GroundPosition, hardware::Antenna, marker::{GeodeticMarker, MarkerType}, prelude::*, EpochFlag, Header
     //reader::BufferedReader,
     //header::ParsingError
 };
 
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
+use hifitime::TimeScale;
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
@@ -181,6 +181,15 @@ impl Event {
     }
 }
 
+/// Event Record content, sorted by [`Epoch`]
+/// Should implement Split and Merge for this.
+pub type Record = BTreeMap<
+    (Epoch, EpochFlag),
+    (
+        Option<f64>,
+        Event,
+    ),
+>;
 
 impl std::fmt::Display for Event {
     /// `Event` formatter, mainly for RINEX file production purposes
@@ -240,6 +249,136 @@ impl std::fmt::Display for Event {
         Ok(())
     }
 }
+
+/// Formats one epoch according to standard definitions
+pub(crate) fn fmt_epoch(
+    epoch: Epoch,
+    flag: EpochFlag,
+    clock_offset: &Option<f64>,
+    data: &Event,
+    header: &Header,
+) -> String {
+    if header.version.major < 3 {
+        fmt_epoch_v2(epoch, flag, clock_offset, data)
+    } else {
+        fmt_epoch_v3(epoch, flag, clock_offset, data)
+    }
+}
+
+fn fmt_epoch_v3(
+    epoch: Epoch,
+    flag: EpochFlag,
+    clock_offset: &Option<f64>,
+    data: &Event,
+) -> String {
+    let mut lines = String::with_capacity(128);
+
+    //TODO: figure a way to compute Event length without formatting
+    let evt_text = format!("{}",data);
+
+    let evt_length = match evt_text.trim_end() {
+        "" => 0,
+        _ => evt_text.trim_end().split("\n").collect::<Vec<_>>().len()
+    };
+
+    lines.push_str(&format!(
+        "> {}  {} {:2}",
+        epoch::format(epoch, crate::types::Type::ObservationData, 3),
+        flag,
+        evt_length
+    ));
+
+    if let Some(data) = clock_offset {
+        lines.push_str(&format!("{:13.4}", data));
+    }
+
+    lines.push('\n');
+    lines.truncate(lines.trim_end().len());
+    lines
+}
+
+fn fmt_epoch_v2(
+    _epoch: Epoch,
+    _flag: EpochFlag,
+    _clock_offset: &Option<f64>,
+    _data: &Event,
+) -> String {
+    panic!("v2 event parsing NotImplemented")
+}
+
+
+
+pub mod mixed {
+
+    //
+    // The mixing of observations and events is done building a BTreeMap
+    // That wraps References to the original data.
+    //
+    // Event and Observation Records are meant to be managed individually
+    //
+
+    use std::collections::{BTreeMap, HashMap};
+
+    use hifitime::Epoch;
+    use thiserror::Error;
+
+    use crate::{observation::{self, ObservationData}, prelude::SV, EpochFlag};
+
+    use super::{Event, Observable};
+    use crate::observation::event;
+
+    pub enum ObservationOrEvent<'a> {
+        Observation( 
+            &'a( 
+                Option<f64>, 
+                BTreeMap<SV, HashMap<Observable, ObservationData>>,
+            )
+        ),
+        Event( &'a( Option<f64>,Event ) )
+    }
+
+    pub type Record<'a> = BTreeMap<
+        (Epoch, EpochFlag),
+        ObservationOrEvent<'a>,
+    >;
+
+
+    #[derive(Error, Debug)]
+    pub enum Error {
+        #[error("failed observation and event combination")]
+        CombinationError
+    }
+
+
+    // The lifetime of the record will be the lifetime of the underlaying
+    // objects.
+    // 
+    // Both observation::Record and event::Record came from with the same
+    // lifetime, wrapped in a ObsEvtRecord(...)
+    //
+    
+    pub fn combine_obs_and_evt<'a>(obs: &'a observation::Record, evt: &'a super::Record) ->
+        Result<Record<'a>,Error>
+    {
+        let mut new_btm = BTreeMap::new();
+
+        for (k,map) in obs {
+            new_btm.insert(*k,ObservationOrEvent::Observation(map));
+        };
+
+        for (k,map) in evt {
+            match new_btm.insert(*k,ObservationOrEvent::Event(map))
+            {
+                None => (),
+                Some(_) => return Err(Error::CombinationError)
+            };
+        };
+
+        Ok(new_btm)
+    }
+
+}
+
 
 #[cfg(test)]
 mod test {
