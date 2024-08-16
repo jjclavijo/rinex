@@ -20,7 +20,7 @@ use super::{
     *,
 };
 
-use crate::navigation::record::parse_epoch as parse_nav_epoch;
+use crate::{navigation::record::parse_epoch as parse_nav_epoch, observation::event::{mixed::{self, ObservationOrEvent}, Event}};
 
 use hifitime::Duration;
 
@@ -39,6 +39,8 @@ pub enum Record {
     NavRecord(navigation::Record),
     /// Observation record, see [observation::record::Record]
     ObsRecord(observation::Record),
+    /// Observation Event record, see [observation::event::Record]
+    ObsEvtRecord(observation::Record,observation::event::Record),
     /// DORIS RINEX, special DORIS measurements wraped as observations
     DorisRecord(doris::Record),
 }
@@ -123,6 +125,7 @@ impl Record {
     pub fn as_obs(&self) -> Option<&observation::Record> {
         match self {
             Record::ObsRecord(r) => Some(r),
+            Record::ObsEvtRecord(r,_) => Some(r),
             _ => None,
         }
     }
@@ -130,9 +133,21 @@ impl Record {
     pub fn as_mut_obs(&mut self) -> Option<&mut observation::Record> {
         match self {
             Record::ObsRecord(r) => Some(r),
+            Record::ObsEvtRecord(r,_) => Some(r),
             _ => None,
         }
     }
+    /// Unwraps self as Mixed OBS and Event record
+    pub fn as_mixed_obs_evt(&self) -> Option<mixed::Record> {
+        match self {
+            Record::ObsEvtRecord(obs,evt) => Some(mixed::combine_obs_and_evt(obs, evt).expect("Panic!")),
+            _ => None,
+        }
+    }
+    /// The mixed::record holds references to the Obs and Evt records, 
+    /// We don't want to mutate this directly, instead mutate the observation
+    /// and event records.
+    ///
     /// Unwraps self as DORIS record
     pub fn as_doris(&self) -> Option<&doris::Record> {
         match self {
@@ -163,28 +178,91 @@ impl Record {
                 }
             },
             Type::ObservationData => {
-                let record = self.as_obs().unwrap();
-                let obs_fields = &header.obs.as_ref().unwrap();
-                let mut compressor = Compressor::default();
-                for ((epoch, flag), (clock_offset, data)) in record.iter() {
-                    let epoch =
-                        observation::record::fmt_epoch(*epoch, *flag, clock_offset, data, header);
-                    if obs_fields.crinex.is_some() {
-                        let major = header.version.major;
-                        let constell = &header.constellation.as_ref().unwrap();
-                        for line in epoch.lines() {
-                            let line = line.to_owned() + "\n"; // helps the following .lines() iterator
-                                                               // embedded in compression method
-                            if let Ok(compressed) =
-                                compressor.compress(major, &obs_fields.codes, constell, &line)
-                            {
-                                // println!("compressed \"{}\"", compressed); // DEBUG
-                                writeln!(writer, "{}", compressed)?;
+                match self {
+                    Self::ObsRecord(_) => {
+                        let record = self.as_obs().unwrap();
+                        let obs_fields = &header.obs.as_ref().unwrap();
+                        let mut compressor = Compressor::default();
+                        for ((epoch, flag), (clock_offset, data)) in record.iter() {
+                            let epoch =
+                                observation::record::fmt_epoch(*epoch, *flag, clock_offset, data, header);
+                            if obs_fields.crinex.is_some() {
+                                let major = header.version.major;
+                                let constell = &header.constellation.as_ref().unwrap();
+                                for line in epoch.lines() {
+                                    let line = line.to_owned() + "\n"; // helps the following .lines() iterator
+                                                                       // embedded in compression method
+                                    if let Ok(compressed) =
+                                        compressor.compress(major, &obs_fields.codes, constell, &line)
+                                    {
+                                        // println!("compressed \"{}\"", compressed); // DEBUG
+                                        writeln!(writer, "{}", compressed)?;
+                                    }
+                                }
+                            } else {
+                                writeln!(writer, "{}", epoch)?;
                             }
                         }
-                    } else {
-                        writeln!(writer, "{}", epoch)?;
-                    }
+
+                    },
+                    Self::ObsEvtRecord(_,_) => {
+                        let record = self.as_mixed_obs_evt().unwrap();
+                        let obs_fields = &header.obs.as_ref().unwrap();
+                        let mut compressor = Compressor::default();
+                        for ((epoch, flag), data) in record.iter() {
+
+                            match data {
+                                ObservationOrEvent::Observation((clock_offset, data)) =>
+                                {
+                                    let epoch =
+                                        observation::record::fmt_epoch(*epoch, *flag, clock_offset, data, header);
+                                    if obs_fields.crinex.is_some() {
+                                        let major = header.version.major;
+                                        let constell = &header.constellation.as_ref().unwrap();
+                                        for line in epoch.lines() {
+                                            let line = line.to_owned() + "\n"; // helps the following .lines() iterator
+                                                                               // embedded in compression method
+                                            if let Ok(compressed) =
+                                                compressor.compress(major, &obs_fields.codes, constell, &line)
+                                            {
+                                                writeln!(writer, "{}", compressed)?;
+                                            }
+                                        }
+                                    } else {
+                                        writeln!(writer, "{}", epoch)?;
+                                    }
+                                },
+                                ObservationOrEvent::Event((clock_offset, data)) =>
+                                {
+                                    //Format epoch with empty data
+                                    let epoch_header =
+                                        observation::event::fmt_epoch(*epoch, *flag, clock_offset, &data, header);
+                                    let epoch = format!("{}\n{}",epoch_header,data);
+
+                                    if obs_fields.crinex.is_some() {
+                                        let major = header.version.major;
+                                        let constell = &header.constellation.as_ref().unwrap();
+                                        for line in epoch.lines() {
+                                            let line = line.to_owned() + "\n"; // helps the following .lines() iterator
+                                                                               // embedded in compression method
+                                            if let Ok(compressed) =
+                                                compressor.compress(major, &obs_fields.codes, constell, &line)
+                                            {
+                                                //use write since we already have the trailing
+                                                //newline
+                                                write!(writer, "{}", compressed)?;
+                                            }
+                                        }
+                                    } else {
+                                        //use write since we already have the trailing newline
+                                        write!(writer, "{}", epoch)?;
+                                    }
+                                }
+                            }
+                        }
+
+                    },
+                    _ => panic!("Observation RINEX parsed as other type.")
                 }
             },
             Type::NavigationData => {
@@ -307,6 +385,7 @@ pub fn parse_record(
     let mut atx_rec = antex::Record::new(); // ATX
     let mut nav_rec = navigation::Record::new(); // NAV
     let mut obs_rec = observation::Record::new(); // OBS
+    let mut evt_rec = observation::event::Record::new(); // OBS
     let mut met_rec = meteo::Record::new(); // MET
     let mut clk_rec = clock::Record::new(); // CLK
     let mut dor_rec = doris::Record::new(); // DORIS
@@ -455,7 +534,26 @@ pub fn parse_record(
                         if let Ok((e, ck_offset, map)) =
                             observation::record::parse_epoch(header, &epoch_content, obs_ts)
                         {
-                            obs_rec.insert(e, (ck_offset, map));
+                            match e.1 {
+                                EpochFlag::NewSiteOccupation => 
+                                    if let Ok(ev) = Event::new(&epoch_content) {
+                                        evt_rec.insert( e,
+                                            (
+                                                ck_offset,
+                                                ev
+                                            ));
+                                    },
+                                EpochFlag::AntennaBeingMoved => 
+                                    if let Ok(ev) = Event::new(&epoch_content) {
+                                        evt_rec.insert( e,
+                                            (
+                                                ck_offset,
+                                                ev
+                                            ));
+                                    },
+                                _ => {obs_rec.insert(e, (ck_offset, map));}
+                            };
+                            
                             comment_ts = e.0; // for comments classification & management
                         }
                     },
@@ -557,8 +655,20 @@ pub fn parse_record(
             if let Ok((e, ck_offset, map)) =
                 observation::record::parse_epoch(header, &epoch_content, obs_ts)
             {
+                match e.1 {
+                    EpochFlag::NewSiteOccupation => 
+                        if let Ok(ev) = Event::new(&epoch_content) {
+                            evt_rec.insert( e,
+                                (
+                                    ck_offset,
+                                    ev
+                                ));
+                        },
+                    _ => ()
+                            
+                };
                 obs_rec.insert(e, (ck_offset, map));
-                comment_ts = e.0; // for comments classification + management
+                comment_ts = e.0; // for comments classification & management
             }
         },
         Type::DORIS => {
@@ -630,7 +740,9 @@ pub fn parse_record(
         Type::IonosphereMaps => Record::IonexRecord(ionx_rec),
         Type::MeteoData => Record::MeteoRecord(met_rec),
         Type::NavigationData => Record::NavRecord(nav_rec),
-        Type::ObservationData => Record::ObsRecord(obs_rec),
+        Type::ObservationData => if evt_rec.len() > 0 {
+            Record::ObsEvtRecord(obs_rec, evt_rec)
+            } else { Record::ObsRecord(obs_rec)},
         Type::DORIS => Record::DorisRecord(dor_rec),
     };
     Ok((record, comments))
