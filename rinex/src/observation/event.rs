@@ -327,6 +327,7 @@ pub mod mixed {
     use super::{Event, Observable};
     use crate::observation::event;
 
+    #[derive(Debug)]
     pub enum ObservationOrEvent<'a> {
         Observation( 
             &'a( 

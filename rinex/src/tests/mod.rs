@@ -8,6 +8,7 @@ mod filename;
 mod merge;
 mod parsing;
 mod production;
+mod add_events;
 
 #[cfg(feature = "clock")]
 mod clock;

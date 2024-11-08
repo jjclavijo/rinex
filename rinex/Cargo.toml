@@ -122,6 +122,7 @@ rinex-qc-traits = { path = "../qc-traits", version = "=0.2.0", optional = true }
 serde_json = "1"
 criterion = "0.5"
 rand = "0.8.4"
+tempfile = "*"
 
 [[bench]]
 name = "benchmark"
